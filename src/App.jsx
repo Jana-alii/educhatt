@@ -347,26 +347,33 @@ const App = () => {
   );
 
   const LandingPage = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden text-center p-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden text-center" style={{ width: '100%', margin: 0, padding: '1rem' }}>
       <FloatingParticles />
-      <div className="max-w-4xl mx-auto pt-24 relative z-10">
+      <div className="pt-24 relative z-10" style={{ width: '100%', maxWidth: '100%', margin: 0, padding: '0 1rem' }}>
         <div className="mb-12 flex justify-center">
           <ModernLogo size={120} />
         </div>
-        <h1 className="text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-indigo-400 my-8">EduBot</h1>
-        <p className="text-2xl text-slate-300 mb-8 leading-relaxed">
+        <h1 className="font-black mb-6 bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent animate-pulse" style={{ fontSize: 'clamp(2.5rem, 8vw, 4.5rem)', lineHeight: '1.1' }}>EduBot</h1>
+        <p className="text-slate-300 mb-8 leading-relaxed" style={{ fontSize: 'clamp(1rem, 3vw, 1.5rem)', margin: '1rem 0 2rem 0' }}>
           Discover the power of AI with advanced RAG technology<br />
           Upload documents, ask questions, get intelligent answers
         </p>
 
         <button
           onClick={startNewChat}
-          className="px-12 py-4 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xl font-bold shadow-2xl transform hover:scale-105 transition-all duration-300 mb-12"
+          className="rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold shadow-2xl transform hover:scale-105 transition-all duration-300 mb-12"
+          style={{ padding: 'clamp(0.75rem, 2vw, 1rem) clamp(2rem, 5vw, 3rem)', fontSize: 'clamp(1rem, 2.5vw, 1.25rem)' }}
         >
           Start Chatting →
         </button>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-left">
+        <div className="grid gap-8 text-left" style={{ 
+          width: '100%', 
+          maxWidth: '1200px', 
+          margin: '0 auto',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          padding: '0 1rem'
+        }}>
           <div className="bg-slate-800/30 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6">
             <FileText className="w-12 h-12 text-violet-400 mb-4" />
             <h3 className="text-xl font-bold text-white mb-2">Document Analysis</h3>
@@ -486,7 +493,7 @@ const App = () => {
 
         {/* messages */}
         <div className="flex-1 p-6 overflow-y-auto" style={{ height: 'calc(100vh - 260px)' }}>
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="space-y-6" style={{ width: '100%', maxWidth: '100%', margin: 0, padding: 0 }}>
             {messages.map((m, idx) => (
               <div key={idx} className={'flex ' + (m.sender === 'user' ? 'justify-end' : 'justify-start')}>
                 <div className={(m.sender === 'user'
@@ -520,8 +527,7 @@ const App = () => {
 
         {/* input */}
         <div className="p-6 bg-slate-800/30 backdrop-blur-xl border-t border-slate-700/50">
-          <div className="max-w-4xl mx-auto">
-            <div className="flex gap-4 items-end">
+          <div className="flex gap-4 items-end" style={{ width: '100%', maxWidth: '100%', margin: 0, padding: 0 }}>
               <div className="flex-1 relative">
                 <textarea
                   ref={textareaRef}
@@ -559,14 +565,20 @@ const App = () => {
               </button>
             </div>
           </div>
-        </div>
 
       </div> 
     </div>
   );
 
   return (
-    <div className="relative min-h-screen">
+    <div className="relative min-h-screen" style={{ 
+      width: '100%', 
+      minWidth: '320px',
+      margin: 0, 
+      padding: 0, 
+      boxSizing: 'border-box',
+      overflowX: 'hidden'
+    }}>
       <WelcomeAnimation />
       <main className="relative">
         {currentPage === 'landing' && <LandingPage />}
