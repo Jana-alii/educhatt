@@ -101,7 +101,7 @@ const App = () => {
     }, 2000);
   };
 
-  // Updated sendMessage function - Compatible with your backend ResponseSchema + Auto-Reconnect
+  // FIXED: Updated sendMessage function with proper JSON format
   const sendMessage = async () => {
     const text = messageRef.current?.trim();
     if (!text || isLoading) return;
@@ -121,25 +121,29 @@ const App = () => {
     setIsTyping(true);
 
     try {
-      // Prepare request data - form-urlencoded as expected by your backend
-      const requestBody = new URLSearchParams();
-      requestBody.append('query', text);
+      // FIXED: Use JSON format instead of form-urlencoded
+      const requestBody = {
+        query: text
+      };
       
+      // Add chat_id only if it exists
       if (chatId) {
-        requestBody.append('chat_id', chatId);
+        requestBody.chat_id = chatId;
       }
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      // API call to your backend
+      console.log('Sending request:', requestBody);
+
+      // FIXED: API call with proper JSON headers
       const res = await fetch(API_BASE + '/chat/rag', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        body: requestBody.toString(),
+        body: JSON.stringify(requestBody),
         signal: controller.signal
       });
 
@@ -150,6 +154,7 @@ const App = () => {
         
         try {
           const errorData = await res.json();
+          console.error('API Error Response:', errorData);
           errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
         } catch {
           errorMessage = await res.text() || `HTTP ${res.status}`;
@@ -164,7 +169,7 @@ const App = () => {
           handleSessionExpired();
           return;
         } else if (res.status === 422) {
-          pushMessage("❌ Invalid request format. Please try again.", 'bot');
+          pushMessage(`❌ Request validation error: ${errorMessage}. Please try again.`, 'bot');
         } else if (res.status === 429) {
           pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
         } else if (res.status >= 500) {
@@ -237,12 +242,13 @@ const App = () => {
     }
   };
 
-  // Updated loadChatHistory function - Compatible with your Message schema
+  // FIXED: Updated loadChatHistory function with proper endpoint
   const loadChatHistory = async (chatId, limit = 50) => {
     if (!chatId) return;
     
     try {
-      const res = await fetch(`${API_BASE}/chat/history/${chatId}?limit=${limit}`, {
+      // FIXED: Use the correct endpoint format
+      const res = await fetch(`${API_BASE}/chat/history?chat_id=${encodeURIComponent(chatId)}&limit=${limit}`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json'
@@ -267,9 +273,11 @@ const App = () => {
         setMessages(formattedMessages);
       } else {
         console.warn('Could not load chat history:', res.status);
+        // Don't show error to user for history loading failure
       }
     } catch (error) {
       console.error('Error loading chat history:', error);
+      // Don't show error to user for history loading failure
     }
   };
 
@@ -293,7 +301,7 @@ const App = () => {
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
-  // Updated File upload handler - Compatible with your backend
+  // FIXED: Updated File upload handler with proper JSON format
   const handleFileInput = async (event) => {
     const f = event.target.files[0];
     if (!f) return;
@@ -321,16 +329,18 @@ const App = () => {
 
     const form = new FormData();
     form.append('file', f);
+    form.append('subject', subject); // FIXED: Add subject to form data
     
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
       
-      // Your backend expects subject as query parameter
-      const res = await fetch(API_BASE + '/files/upload?subject=' + encodeURIComponent(subject), {
+      // FIXED: Remove query parameter, use form data instead
+      const res = await fetch(API_BASE + '/files/upload', {
         method: 'POST',
         body: form,
-        signal: controller.signal
+        signal: controller.signal,
+        // Don't set Content-Type header, let browser set it with boundary for multipart
       });
       
       clearTimeout(timeoutId);
@@ -340,6 +350,7 @@ const App = () => {
         
         try {
           const errorData = await res.json();
+          console.error('Upload Error Response:', errorData);
           errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
         } catch {
           errorMessage = await res.text() || `HTTP ${res.status}`;
@@ -352,7 +363,7 @@ const App = () => {
         } else if (res.status === 413) {
           alert('❌ File is too large. Please try a smaller PDF file.');
         } else if (res.status === 422) {
-          alert('❌ Invalid request. Please check the file and subject.');
+          alert(`❌ Validation error: ${errorMessage}. Please check the file and subject.`);
         } else if (res.status === 429) {
           alert('⚠️ Too many uploads. Please wait before uploading another file.');
         } else if (res.status >= 500) {
@@ -1064,4 +1075,4 @@ const App = () => {
   );
 };
 
-export default App
+export default App;
