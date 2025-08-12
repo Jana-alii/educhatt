@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload, MessageCircle, Brain, Sparkles, FileText, Trash2, Send,
-  ArrowLeft, Users, Bot, Heart, Rocket, Shield, Camera
+  ArrowLeft, Users, Bot, Heart, Rocket, Shield, Camera, Plus, X, Check
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -21,7 +21,7 @@ const App = () => {
 
   // UI bits
   const [showWelcome, setShowWelcome] = useState(true);
-  const [robotAnimation, setRobotAnimation] = useState('flying'); // 'flying', 'landed', 'waving'
+  const [robotAnimation, setRobotAnimation] = useState('flying');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -91,7 +91,7 @@ const App = () => {
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
-  // API: send message to backend
+  // API: send message to backend - WITH COMPREHENSIVE ERROR HANDLING
   const sendMessage = async () => {
     const text = messageRef.current?.trim();
     if (!text || isLoading) return;
@@ -111,30 +111,81 @@ const App = () => {
     setIsTyping(true);
 
     try {
-      const formData = new FormData();
+      const formData = new URLSearchParams();
       formData.append('query', text);
+      
       if (chatId) {
         formData.append('chat_id', chatId);
       }
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const res = await fetch(API_BASE + '/chat/rag', {
         method: 'POST',
-        body: formData
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        body: formData.toString(),
+        signal: controller.signal
       });
 
+      clearTimeout(timeoutId);
+
       if (!res.ok) {
-        const demo = getDemoResponse(text);
-        pushMessage(demo, 'bot');
-      } else {
-        const data = await res.json();
-        const answer = data.result || data.answer || data.message || getDemoResponse(text);
-        if (data.chat_id) setChatId(data.chat_id);
-        pushMessage(answer, 'bot');
+        let errorMessage = 'Unknown error occurred';
+        
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        } catch {
+          errorMessage = await res.text() || `HTTP ${res.status}`;
+        }
+
+        console.error('API Error:', res.status, errorMessage);
+        
+        if (res.status === 422) {
+          pushMessage("❌ Invalid request format. Please try again.", 'bot');
+        } else if (res.status === 429) {
+          pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
+        } else if (res.status >= 500) {
+          pushMessage("🔧 Server error occurred. Our team has been notified. Please try again later.", 'bot');
+        } else if (res.status === 404) {
+          pushMessage("❓ Chat service not found. Please refresh and try again.", 'bot');
+        } else {
+          pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
+        }
+        return;
       }
 
-    } catch (e) {
-      const demo = getDemoResponse(text);
-      pushMessage(demo, 'bot');
+      const data = await res.json();
+      
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid response format');
+      }
+
+      const answer = data.result || getDemoResponse(text);
+      if (data.chat_id) setChatId(data.chat_id);
+      pushMessage(answer, 'bot');
+      
+      if (data.usage) {
+        console.log('Token usage:', data.usage);
+      }
+
+    } catch (error) {
+      console.error('Network Error:', error);
+      
+      if (error.name === 'AbortError') {
+        pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
+      } else if (error.message?.includes('fetch')) {
+        pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
+      } else if (error.message?.includes('CORS')) {
+        pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
+      } else {
+        const demo = getDemoResponse(text);
+        pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
+      }
     } finally {
       setIsTyping(false);
       setIsLoading(false);
@@ -142,47 +193,109 @@ const App = () => {
     }
   };
 
-  // File upload handler
+  // File upload handler - WITH COMPREHENSIVE ERROR HANDLING
   const handleFileInput = async (event) => {
     const f = event.target.files[0];
     if (!f) return;
+    
     if (!f.name.toLowerCase().endsWith('.pdf')) {
-      alert('Only PDF files are supported 📄');
+      alert('❌ Only PDF files are supported. Please select a PDF file.');
       event.target.value = '';
       return;
     }
+    
+    const maxSize = 50 * 1024 * 1024;
+    if (f.size > maxSize) {
+      alert('❌ File is too large. Please select a PDF file smaller than 50MB.');
+      event.target.value = '';
+      return;
+    }
+    
     const subject = prompt('Enter file topic/category:') || 'General';
+    if (!subject.trim()) {
+      alert('❌ Subject is required. Please try again.');
+      return;
+    }
+    
     setIsUploading(true);
 
     const form = new FormData();
     form.append('file', f);
     
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      
       const res = await fetch(API_BASE + '/files/upload?subject=' + encodeURIComponent(subject), {
         method: 'POST',
-        body: form
+        body: form,
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
+      
       if (!res.ok) {
-        throw new Error('Upload failed');
+        let errorMessage = 'Upload failed';
+        
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        } catch {
+          errorMessage = await res.text() || `HTTP ${res.status}`;
+        }
+
+        console.error('Upload Error:', res.status, errorMessage);
+        
+        if (res.status === 400) {
+          alert('❌ Invalid file format. Only PDF files are supported.');
+        } else if (res.status === 413) {
+          alert('❌ File is too large. Please try a smaller PDF file.');
+        } else if (res.status === 422) {
+          alert('❌ Invalid request. Please check the file and subject.');
+        } else if (res.status === 429) {
+          alert('⚠️ Too many uploads. Please wait before uploading another file.');
+        } else if (res.status >= 500) {
+          alert('🔧 Server error during upload. Please try again later.');
+        } else {
+          alert(`❌ Upload failed: ${errorMessage}`);
+        }
+        return;
       }
+      
       const data = await res.json();
-      const newFile = {
-        id: data.file_id || data.id || (Date.now().toString()),
-        name: data.filename || f.name,
-        subject: data.subject || subject,
-        uploadDate: data.uploaded_at || data.created_at || new Date().toISOString(),
-        size: data.size ? (data.size / 1024 / 1024).toFixed(2) + ' MB' : (f.size / 1024 / 1024).toFixed(2) + ' MB'
-      };
-      setUploadedFiles(prev => [newFile, ...prev]);
-    } catch (err) {
+      console.log('Upload response:', data);
+      
       const newFile = {
         id: Date.now().toString(),
         name: f.name,
-        subject,
+        subject: subject,
         uploadDate: new Date().toISOString(),
         size: (f.size / 1024 / 1024).toFixed(2) + ' MB'
       };
+      
       setUploadedFiles(prev => [newFile, ...prev]);
+      alert('✅ File uploaded and processed successfully!');
+      
+    } catch (error) {
+      console.error('Upload error:', error);
+      
+      if (error.name === 'AbortError') {
+        alert('⏱️ Upload timed out. Please try with a smaller file or check your connection.');
+      } else if (error.message?.includes('fetch') || error.message?.includes('network')) {
+        alert('🌐 Network error during upload. Please check your connection and try again.');
+      } else if (error.message?.includes('CORS')) {
+        alert('🔒 Upload blocked by security settings. Please contact support.');
+      } else {
+        const newFile = {
+          id: Date.now().toString(),
+          name: f.name,
+          subject,
+          uploadDate: new Date().toISOString(),
+          size: (f.size / 1024 / 1024).toFixed(2) + ' MB'
+        };
+        setUploadedFiles(prev => [newFile, ...prev]);
+        alert('⚠️ Upload error occurred, but file added to demo list. Real upload may have failed.');
+      }
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -191,16 +304,83 @@ const App = () => {
 
   // delete file handler
   const deleteFile = async (fileId) => {
-    if (!confirm('Delete this file?')) return;
+    if (!confirm('Are you sure you want to delete this file? This action cannot be undone.')) return;
+    
+    setUploadedFiles(prev => prev.map(f => 
+      f.id === fileId ? { ...f, deleting: true } : f
+    ));
+    
     try {
-      const res = await fetch(API_BASE + '/files/delete/' + encodeURIComponent(fileId), { method: 'DELETE' });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      
+      const res = await fetch(API_BASE + '/files/delete/' + encodeURIComponent(fileId), { 
+        method: 'DELETE',
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+      
+      clearTimeout(timeoutId);
+      
       if (res.ok) {
-        setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+        try {
+          const data = await res.json();
+          console.log('Delete response:', data);
+          setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+          alert('✅ File deleted successfully!');
+        } catch {
+          setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+          alert('✅ File deleted successfully!');
+        }
       } else {
+        let errorMessage = 'Delete failed';
+        
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        } catch {
+          errorMessage = await res.text() || `HTTP ${res.status}`;
+        }
+
+        console.error('Delete Error:', res.status, errorMessage);
+        
+        if (res.status === 404) {
+          setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+          alert('ℹ️ File was already deleted or not found.');
+        } else if (res.status === 403) {
+          alert('❌ Not authorized to delete this file.');
+          setUploadedFiles(prev => prev.map(f => 
+            f.id === fileId ? { ...f, deleting: undefined } : f
+          ));
+        } else if (res.status >= 500) {
+          alert('🔧 Server error during deletion. Please try again later.');
+          setUploadedFiles(prev => prev.map(f => 
+            f.id === fileId ? { ...f, deleting: undefined } : f
+          ));
+        } else {
+          alert(`❌ Delete failed: ${errorMessage}`);
+          setUploadedFiles(prev => prev.map(f => 
+            f.id === fileId ? { ...f, deleting: undefined } : f
+          ));
+        }
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      
+      if (error.name === 'AbortError') {
+        alert('⏱️ Delete request timed out. Please try again.');
+      } else if (error.message?.includes('fetch') || error.message?.includes('network')) {
+        alert('🌐 Network error during deletion. Please check your connection.');
+      } else {
+        alert('⚠️ Unexpected error during deletion. File removed from list locally.');
         setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
       }
-    } catch (e) {
-      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+      
+      setUploadedFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, deleting: undefined } : f
+      ));
     }
   };
 
@@ -221,15 +401,12 @@ const App = () => {
 
     return (
       <div className="relative group">
-        {/* Robot glow effect */}
         <div className="absolute inset-0 bg-gradient-to-r from-violet-600 to-indigo-600 rounded-3xl blur-lg opacity-75 group-hover:opacity-100 transition-all duration-300 animate-pulse"></div>
         
-        {/* Flying trail effect */}
         {animation === 'flying' && (
           <div className="absolute -right-20 top-1/2 w-40 h-2 bg-gradient-to-r from-violet-400 to-transparent rounded-full opacity-60 animate-pulse"></div>
         )}
         
-        {/* Robot body */}
         <div
           className="relative bg-gradient-to-br from-violet-500 via-purple-600 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl transition-all duration-2000 ease-out"
           style={{ 
@@ -243,7 +420,6 @@ const App = () => {
             size={size * 0.6} 
           />
           
-          {/* Waving hand */}
           {animation === 'waving' && (
             <div 
               className="absolute -top-8 -right-8 w-12 h-12 bg-gradient-to-r from-yellow-400 to-orange-400 rounded-full flex items-center justify-center text-2xl animate-bounce shadow-lg"
@@ -253,7 +429,6 @@ const App = () => {
             </div>
           )}
           
-          {/* Speech bubble */}
           {animation === 'waving' && (
             <div 
               className="absolute -top-20 -right-10 bg-white rounded-2xl px-4 py-2 shadow-xl animate-fade-in"
@@ -265,7 +440,6 @@ const App = () => {
           )}
         </div>
 
-        {/* Sparkles around robot */}
         {animation === 'landed' && (
           <>
             {[...Array(8)].map((_, i) => (
@@ -318,7 +492,6 @@ const App = () => {
           </h1>
           <p className="text-violet-200 text-xl md:text-2xl font-light mb-8">Your Next-Generation AI Assistant ✨</p>
           
-          {/* Welcome message sequence */}
           {robotAnimation === 'waving' && (
             <div className="animate-fade-in mt-8">
               <p className="text-2xl text-yellow-300 font-bold animate-bounce">
@@ -395,178 +568,370 @@ const App = () => {
   );
 
   const ChatPage = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex">
-      {/* Sidebar */}
-      <div className="w-80 bg-slate-800/50 backdrop-blur-xl border-r border-slate-700/50 flex flex-col">
-        <div className="p-6 border-b border-slate-700/50">
-          <div className="flex items-center gap-3 mb-4">
-            <button onClick={() => setCurrentPage('landing')} className="bg-gradient-to-r from-violet-500 to-purple-500 text-white p-2 rounded-lg hover:scale-110 transition-transform">
-              <ArrowLeft size={18} />
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex flex-col">
+      {/* Fixed Header with Logo - Always Visible and FIXED POSITION */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-xl border-b border-violet-500/20 shadow-2xl">
+        <div className="flex items-center justify-between p-4">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setCurrentPage('landing')} 
+              className="bg-gradient-to-r from-violet-600 to-purple-600 text-white p-3 rounded-xl hover:scale-110 transition-all duration-300 shadow-lg"
+            >
+              <ArrowLeft size={20} />
             </button>
+            <ModernLogo size={50} />
             <div>
-              <h2 className="text-xl font-bold text-white">EduBot</h2>
-              <p className="text-sm text-slate-400">Demo Version - PDF + RAG</p>
+              <h2 className="text-2xl font-bold bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent">EduBot</h2>
+              <p className="text-sm text-slate-400">AI Assistant with RAG Technology</p>
             </div>
           </div>
-
-          <div className="relative">
-            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileInput} className="hidden" />
-            <button
-              className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white p-3 rounded-2xl flex items-center justify-center gap-3 transform hover:scale-105 transition-all duration-300"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-            >
-              <Upload size={16} />
-              {isUploading ? 'Uploading...' : 'Upload PDF File'}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 p-6 overflow-y-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-white">Uploaded Files</h3>
-            <span className="text-sm text-slate-400 bg-slate-700/50 px-3 py-1 rounded-full">{uploadedFiles.length}</span>
-          </div>
-
-          <div className="space-y-3">
-            {uploadedFiles.length === 0 ? (
-              <div className="text-center py-12">
-                <FileText className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-                <p className="text-slate-400 text-lg">No files uploaded</p>
-                <p className="text-slate-500 text-sm mt-2">Upload PDF files to enable Q&A features</p>
+          <div className="text-right">
+            {chatId ? (
+              <div>
+                <span className="text-sm text-slate-300">Chat: <span className="text-violet-400 font-mono">{chatId.slice(-8)}</span></span>
+                <div className="text-xs text-green-400 flex items-center gap-1">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                  Connected
+                </div>
               </div>
             ) : (
-              uploadedFiles.map(file => (
-                <div key={file.id} className="bg-slate-700/30 border border-slate-600/30 rounded-xl p-3 group hover:bg-slate-700/50 transition-all duration-300">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-r from-red-500 to-pink-500 rounded-lg flex items-center justify-center">
-                        <FileText className="w-5 h-5 text-white" />
-                      </div>
-                      <div className="min-w-0">
-                        <h4 className="text-white font-medium text-sm truncate">{file.name}</h4>
-                        <p className="text-slate-400 text-xs">{file.subject}</p>
-                        <p className="text-slate-500 text-xs">{file.size}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <button
-                        onClick={() => deleteFile(file.id)}
-                        className="text-slate-400 hover:text-red-400 p-1 rounded-lg hover:bg-slate-600/50 transition-all duration-300"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="text-xs text-slate-500 mt-2">{file.uploadDate ? new Date(file.uploadDate).toLocaleDateString('en-US') : ''}</div>
-                </div>
-              ))
+              <span className="text-sm text-amber-400 animate-pulse">New Chat</span>
             )}
           </div>
         </div>
       </div>
 
-      {/* Main chat area */}
-      <div className="flex-1 flex flex-col">
-        {/* header */}
-        <div className="bg-slate-800/30 backdrop-blur-xl border-b border-slate-700/50 p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <ModernLogo size={48} />
-              <div>
-                <h2 className="text-2xl font-bold text-white">EduBot Assistant</h2>
-                <p className="text-slate-400">Ask about uploaded files or any general inquiry</p>
-              </div>
-            </div>
-            <div className="text-right">
-              {chatId ? (
-                <div>
-                  <span className="text-sm text-slate-300">Chat ID: <b>{chatId}</b></span>
-                  <div className="text-xs text-green-400">● Connected</div>
-                </div>
-              ) : (
-                <span className="text-sm text-amber-400">New Chat</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* messages */}
-        <div className="flex-1 p-6 overflow-y-auto" style={{ height: 'calc(100vh - 260px)' }}>
-          <div className="space-y-6" style={{ width: '100%', maxWidth: '100%', margin: 0, padding: 0 }}>
-            {messages.map((m, idx) => (
-              <div key={idx} className={'flex ' + (m.sender === 'user' ? 'justify-end' : 'justify-start')}>
-                <div className={(m.sender === 'user'
-                    ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-3xl rounded-br-lg'
-                    : 'bg-slate-800/50 backdrop-blur-sm text-white border border-slate-700/50 rounded-3xl rounded-bl-lg'
-                ) + ' p-6 shadow-xl max-w-[75%] animate-fade-in'}>
-                  <p className="leading-relaxed text-lg whitespace-pre-wrap">{m.text}</p>
-                  <p className={'text-xs mt-3 ' + (m.sender === 'user' ? 'text-violet-200' : 'text-slate-400')}>
-                    {m.timestamp ? (new Date(m.timestamp)).toLocaleTimeString('en-US') : ''}
-                  </p>
-                </div>
-              </div>
-            ))}
-
-            {isTyping && (
-              <div className="flex justify-start">
-                <div className="bg-slate-800/50 backdrop-blur-sm text-white border border-slate-700/50 p-6 rounded-3xl rounded-bl-lg shadow-xl">
-                  <div className="flex gap-2 items-center">
-                    <div className="w-3 h-3 bg-violet-400 rounded-full animate-bounce"></div>
-                    <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                    <div className="w-3 h-3 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <span className="ml-3 text-slate-400">EduBot is thinking...</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        {/* input */}
-        <div className="p-6 bg-slate-800/30 backdrop-blur-xl border-t border-slate-700/50">
-          <div className="flex gap-4 items-end" style={{ width: '100%', maxWidth: '100%', margin: 0, padding: 0 }}>
-              <div className="flex-1 relative">
-                <textarea
-                  ref={textareaRef}
-                  onChange={(e) => {
-                    messageRef.current = e.target.value;
-                    e.target.style.height = 'auto';
-                    e.target.style.height = `${e.target.scrollHeight}px`;
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage();
-                    }
-                  }}
-                  placeholder="Ask me anything (Shift+Enter for new line)..."
-                  disabled={isLoading}
-                  rows={1}
-                  style={{ minHeight: '48px', lineHeight: '1.5' }}
-                  className="w-full resize-none max-h-40 overflow-y-auto bg-slate-700/50 backdrop-blur-sm border-2 border-slate-600/50 rounded-2xl px-6 py-4 text-white placeholder-slate-400 focus:outline-none focus:border-violet-500 focus:ring-4 focus:ring-violet-500/20 transition-all duration-300 text-lg disabled:opacity-50"
-                />
-              </div>
+      {/* ADD TOP PADDING TO ACCOUNT FOR FIXED HEADER */}
+      <div className="pt-20 flex flex-1 overflow-hidden">
+        {/* Enhanced Sidebar with Better File Upload */}
+        <div className="w-80 bg-slate-900/50 backdrop-blur-xl border-r border-violet-500/20 flex flex-col shadow-2xl">
+          
+          {/* Upload Section */}
+          <div className="p-6 border-b border-violet-500/20">
+            <div className="space-y-4">
+              {/* Upload Button */}
+              <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileInput} className="hidden" />
               <button
-                onClick={sendMessage}
-                disabled={!messageRef.current?.trim() || isLoading}
-                className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-4 rounded-2xl transition-all duration-300 hover:scale-110 shadow-lg flex items-center justify-center group min-w-[60px] h-[60px]"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                className="w-full bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-600 hover:from-violet-500 hover:via-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white p-4 rounded-2xl flex items-center justify-center gap-3 transform hover:scale-105 transition-all duration-300 shadow-xl relative overflow-hidden group"
               >
-                {isLoading ? (
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <div className="absolute inset-0 bg-gradient-to-r from-violet-400/20 to-indigo-400/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                {isUploading ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span className="font-medium">Processing PDF...</span>
+                  </>
                 ) : (
-                  <Send
-                    size={20}
-                    className="group-hover:translate-x-1 transition-transform duration-300"
-                  />
+                  <>
+                    <Upload size={20} />
+                    <span className="font-medium">Upload PDF Document</span>
+                  </>
                 )}
               </button>
+
+              {/* Upload Info */}
+              <div className="bg-slate-800/40 backdrop-blur-sm border border-violet-500/20 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <FileText className="w-4 h-4 text-violet-400" />
+                  <span className="text-sm font-medium text-white">Supported Format</span>
+                </div>
+                <p className="text-xs text-slate-400">PDF files only • Max 50MB</p>
+              </div>
             </div>
           </div>
 
-      </div> 
+          {/* Files List Section */}
+          <div className="flex-1 p-6 overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-violet-200 bg-clip-text text-transparent">Document Library</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-400 bg-violet-500/20 px-3 py-1 rounded-full border border-violet-500/30">{uploadedFiles.length}</span>
+                {uploadedFiles.length > 0 && (
+                  <Check className="w-4 h-4 text-green-400" />
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {uploadedFiles.length === 0 ? (
+                <div className="text-center py-12">
+                  <div className="relative mb-6">
+                    <div className="w-20 h-20 bg-gradient-to-br from-violet-500/20 to-purple-500/20 rounded-2xl flex items-center justify-center mx-auto border border-violet-500/30">
+                      <FileText className="w-10 h-10 text-violet-400" />
+                    </div>
+                    <div className="absolute -top-2 -right-2 w-8 h-8 bg-gradient-to-r from-violet-500 to-purple-500 rounded-full flex items-center justify-center">
+                      <Plus className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-slate-300 text-lg font-medium mb-2">No documents yet</p>
+                  <p className="text-slate-400 text-sm">Upload PDF files to unlock advanced Q&A capabilities</p>
+                </div>
+              ) : (
+                uploadedFiles.map((file, index) => (
+                  <div key={file.id} className="group relative">
+                    {/* File Card */}
+                    <div className="bg-gradient-to-br from-slate-800/50 to-slate-700/30 backdrop-blur-sm border border-violet-500/20 rounded-2xl p-4 hover:border-violet-400/40 transition-all duration-300 hover:shadow-xl hover:shadow-violet-500/10">
+                      
+                      {/* File Header */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          {/* File Icon */}
+                          <div className="relative">
+                            <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-pink-600 rounded-xl flex items-center justify-center shadow-lg">
+                              <FileText className="w-6 h-6 text-white" />
+                            </div>
+                            {/* File Index Badge */}
+                            <div className="absolute -top-2 -right-2 w-6 h-6 bg-gradient-to-r from-violet-500 to-purple-500 rounded-full flex items-center justify-center text-xs font-bold text-white">
+                              {index + 1}
+                            </div>
+                          </div>
+                          
+                          {/* File Info */}
+                          <div className="flex-1 min-w-0">
+                            <h4 className="text-white font-medium text-sm truncate group-hover:text-violet-200 transition-colors">
+                              {file.name}
+                            </h4>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-xs bg-violet-500/20 text-violet-300 px-2 py-1 rounded-lg border border-violet-500/30">
+                                {file.subject}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Delete Button */}
+                        <button
+                          onClick={() => deleteFile(file.id)}
+                          disabled={file.deleting}
+                          className="text-slate-400 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed group/delete"
+                          title="Delete file"
+                        >
+                          {file.deleting ? (
+                            <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Trash2 size={16} className="group-hover/delete:scale-110 transition-transform" />
+                          )}
+                        </button>
+                      </div>
+
+                      {/* File Details */}
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="bg-slate-700/40 rounded-lg p-2">
+                          <span className="text-slate-400">Size:</span>
+                          <span className="text-slate-200 ml-1 font-medium">{file.size}</span>
+                        </div>
+                        <div className="bg-slate-700/40 rounded-lg p-2">
+                          <span className="text-slate-400">Added:</span>
+                          <span className="text-slate-200 ml-1 font-medium">
+                            {file.uploadDate ? new Date(file.uploadDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Today'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Processing Status */}
+                      {file.deleting && (
+                        <div className="mt-3 flex items-center gap-2 text-yellow-400 text-xs animate-pulse">
+                          <div className="w-3 h-3 bg-yellow-400 rounded-full animate-ping"></div>
+                          Deleting file...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Upload Tips */}
+            {uploadedFiles.length === 0 && (
+              <div className="mt-8 bg-gradient-to-r from-violet-500/10 to-purple-500/10 border border-violet-500/20 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="w-4 h-4 text-violet-400" />
+                  <span className="text-sm font-medium text-violet-300">Pro Tips</span>
+                </div>
+                <ul className="text-xs text-slate-400 space-y-1">
+                  <li>• Upload research papers, textbooks, or documents</li>
+                  <li>• Ask specific questions about the content</li>
+                  <li>• Get instant, accurate answers with citations</li>
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Main Chat Area */}
+        <div className="flex-1 flex flex-col">
+          
+          {/* Chat Messages Area */}
+          <div className="flex-1 p-6 overflow-y-auto bg-gradient-to-b from-transparent to-slate-900/20">
+            <div className="max-w-4xl mx-auto space-y-6">
+              {messages.length === 0 && (
+                <div className="text-center py-12">
+                  <div className="relative mb-8">
+                    <ModernLogo size={80} />
+                  </div>
+                  <h3 className="text-2xl font-bold bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent mb-4">
+                    Ready to help you learn! 🚀
+                  </h3>
+                  <p className="text-slate-400 text-lg mb-8">Ask me anything or upload a PDF to get started</p>
+                  
+                  {/* Quick Actions */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto">
+                    <button 
+                      onClick={() => {
+                        messageRef.current = "What can you help me with?";
+                        if (textareaRef.current) textareaRef.current.value = messageRef.current;
+                        sendMessage();
+                      }}
+                      className="bg-slate-800/50 hover:bg-violet-500/20 border border-slate-700/50 hover:border-violet-500/50 rounded-xl p-4 text-left transition-all duration-300 group"
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <Brain className="w-5 h-5 text-violet-400 group-hover:scale-110 transition-transform" />
+                        <span className="font-medium text-white">General Questions</span>
+                      </div>
+                      <p className="text-sm text-slate-400">Ask about any topic or concept</p>
+                    </button>
+                    
+                    <button 
+                      onClick={() => fileInputRef.current?.click()}
+                      className="bg-slate-800/50 hover:bg-emerald-500/20 border border-slate-700/50 hover:border-emerald-500/50 rounded-xl p-4 text-left transition-all duration-300 group"
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <Upload className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform" />
+                        <span className="font-medium text-white">Upload & Analyze</span>
+                      </div>
+                      <p className="text-sm text-slate-400">Upload PDF for document analysis</p>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {messages.map((m, idx) => (
+                <div key={idx} className={'flex ' + (m.sender === 'user' ? 'justify-end' : 'justify-start')}>
+                  <div className="flex items-start gap-3 max-w-[80%]">
+                    {/* Avatar */}
+                    {m.sender === 'bot' && (
+                      <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg flex-shrink-0">
+                        <Bot className="w-5 h-5 text-white" />
+                      </div>
+                    )}
+                    
+                    {/* Message Content */}
+                    <div className={(m.sender === 'user'
+                        ? 'bg-gradient-to-br from-violet-600 to-purple-600 text-white rounded-2xl rounded-br-lg'
+                        : 'bg-slate-800/60 backdrop-blur-sm text-white border border-violet-500/20 rounded-2xl rounded-bl-lg'
+                    ) + ' p-4 shadow-xl animate-fade-in relative group'}>
+                      
+                      {/* Message Text */}
+                      <p className="leading-relaxed whitespace-pre-wrap">{m.text}</p>
+                      
+                      {/* Timestamp */}
+                      <p className={'text-xs mt-3 flex items-center gap-2 ' + (m.sender === 'user' ? 'text-violet-200' : 'text-slate-400')}>
+                        <span>{m.timestamp ? new Date(m.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                        {m.sender === 'user' && <Check size={12} />}
+                      </p>
+                    </div>
+
+                    {/* User Avatar */}
+                    {m.sender === 'user' && (
+                      <div className="w-10 h-10 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl flex items-center justify-center shadow-lg flex-shrink-0">
+                        <span className="text-white font-bold text-sm">You</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {/* Typing Indicator */}
+              {isTyping && (
+                <div className="flex justify-start">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
+                      <Bot className="w-5 h-5 text-white" />
+                    </div>
+                    <div className="bg-slate-800/60 backdrop-blur-sm border border-violet-500/20 p-4 rounded-2xl rounded-bl-lg shadow-xl">
+                      <div className="flex gap-2 items-center">
+                        <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        <span className="ml-3 text-slate-400 text-sm">EduBot is thinking...</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+
+          {/* Enhanced Input Area */}
+          <div className="sticky bottom-0 bg-slate-900/95 backdrop-blur-xl border-t border-violet-500/20 p-6">
+            <div className="max-w-4xl mx-auto">
+              <div className="flex gap-4 items-end">
+                <div className="flex-1 relative">
+                  {/* Input Container */}
+                  <div className="relative bg-slate-800/50 backdrop-blur-sm border-2 border-violet-500/30 rounded-2xl focus-within:border-violet-400 focus-within:ring-4 focus-within:ring-violet-500/20 transition-all duration-300">
+                    <textarea
+                      ref={textareaRef}
+                      onChange={(e) => {
+                        messageRef.current = e.target.value;
+                        e.target.style.height = 'auto';
+                        e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          sendMessage();
+                        }
+                      }}
+                      placeholder="Ask me anything about your documents or any topic... (Shift+Enter for new line)"
+                      disabled={isLoading}
+                      rows={1}
+                      style={{ minHeight: '56px', lineHeight: '1.5', resize: 'none' }}
+                      className="w-full bg-transparent border-none rounded-2xl px-6 py-4 pr-20 text-white placeholder-slate-400 focus:outline-none text-lg max-h-[120px] overflow-y-auto disabled:opacity-50"
+                    />
+                    
+                    {/* Character Count */}
+                    {messageRef.current && messageRef.current.length > 100 && (
+                      <div className="absolute bottom-2 right-20 text-xs text-slate-400">
+                        {messageRef.current.length}/2000
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Send Button */}
+                <button
+                  onClick={sendMessage}
+                  disabled={!messageRef.current?.trim() || isLoading}
+                  className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-4 rounded-2xl transition-all duration-300 hover:scale-110 shadow-xl flex items-center justify-center group min-w-[64px] h-[64px]"
+                >
+                  {isLoading ? (
+                    <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Send
+                      size={24}
+                      className="group-hover:translate-x-1 transition-transform duration-300"
+                    />
+                  )}
+                </button>
+              </div>
+
+              {/* Input Helper Text */}
+              <div className="flex items-center justify-between mt-3 text-xs text-slate-400">
+                <div className="flex items-center gap-4">
+                  <span>💡 Try asking about uploaded PDFs or general topics</span>
+                  {uploadedFiles.length > 0 && (
+                    <span className="text-green-400">📄 {uploadedFiles.length} document{uploadedFiles.length > 1 ? 's' : ''} ready</span>
+                  )}
+                </div>
+                <span>Shift+Enter for new line</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 
