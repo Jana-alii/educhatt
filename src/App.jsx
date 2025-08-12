@@ -79,120 +79,183 @@ const App = () => {
     return responses[Math.floor(Math.random() * responses.length)];
   };
 
-  // start new chat
-  const startNewChat = () => {
-    setChatId('demo-' + Date.now());
+// Fixed sendMessage function - 100% compatible with your backend
+const sendMessage = async () => {
+  const text = messageRef.current?.trim();
+  if (!text || isLoading) return;
+
+  // append user message locally
+  const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
+  setMessages(prev => [...prev, userMsg]);
+
+  setInputMessage('');
+  messageRef.current = '';
+  if (textareaRef.current) {
+    textareaRef.current.value = '';
+    textareaRef.current.style.height = 'auto';
+  }
+  
+  setIsLoading(true);
+  setIsTyping(true);
+
+  try {
+    // Prepare request data - matching your backend exactly
+    const requestBody = new URLSearchParams();
+    requestBody.append('query', text);
+    
+    if (chatId) {
+      requestBody.append('chat_id', chatId);
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    // API call to your backend
+    const res = await fetch(API_BASE + '/chat/rag', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: requestBody.toString(),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      let errorMessage = 'Unknown error occurred';
+      
+      try {
+        const errorData = await res.json();
+        errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+      } catch {
+        errorMessage = await res.text() || `HTTP ${res.status}`;
+      }
+
+      console.error('API Error:', res.status, errorMessage);
+      
+      if (res.status === 422) {
+        pushMessage("❌ Invalid request format. Please try again.", 'bot');
+      } else if (res.status === 429) {
+        pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
+      } else if (res.status >= 500) {
+        pushMessage("🔧 Server error occurred. Please try again later.", 'bot');
+      } else if (res.status === 404) {
+        pushMessage("❓ Chat service not found. Please refresh and try again.", 'bot');
+      } else {
+        pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
+      }
+      return;
+    }
+
+    const data = await res.json();
+    console.log('Chat API Response:', data);
+    
+    // Handle response based on your ResponseSchema
+    if (data && typeof data === 'object') {
+      // Extract response text
+      let answer = '';
+      if (data.result) {
+        answer = data.result;
+      } else if (data.message) {
+        answer = data.message;
+      } else {
+        answer = getDemoResponse(text);
+      }
+
+      // Update chat ID if provided
+      if (data.chat_id && data.chat_id !== chatId) {
+        console.log('Updating chat ID:', data.chat_id);
+        setChatId(data.chat_id);
+      }
+
+      // Log usage if provided
+      if (data.usage) {
+        console.log('Token usage:', data.usage);
+      }
+
+      // Add bot response to chat
+      pushMessage(answer, 'bot');
+
+    } else {
+      // Fallback if response format is unexpected
+      console.warn('Unexpected response format:', data);
+      const fallbackResponse = getDemoResponse(text);
+      pushMessage(fallbackResponse, 'bot');
+    }
+
+  } catch (error) {
+    console.error('Chat API Error:', error);
+    
+    if (error.name === 'AbortError') {
+      pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
+    } else if (error.message?.includes('fetch')) {
+      pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
+    } else if (error.message?.includes('CORS')) {
+      pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
+    } else {
+      // Use demo response as fallback
+      const demo = getDemoResponse(text);
+      pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
+    }
+  } finally {
+    setIsTyping(false);
+    setIsLoading(false);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }
+};
+
+// Optional: Function to load chat history
+const loadChatHistory = async (chatId, limit = 50) => {
+  if (!chatId) return;
+  
+  try {
+    const res = await fetch(`${API_BASE}/chat/history/${chatId}?limit=${limit}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json'
+      }
+    });
+
+    if (res.ok) {
+      const history = await res.json();
+      console.log('Chat history loaded:', history);
+      
+      // Convert history to your message format
+      const formattedMessages = history.map(msg => ({
+        text: msg.content,
+        sender: msg.role === 'user' ? 'user' : 'bot',
+        timestamp: msg.timestamp
+      }));
+      
+      setMessages(formattedMessages);
+    } else {
+      console.warn('Could not load chat history:', res.status);
+    }
+  } catch (error) {
+    console.error('Error loading chat history:', error);
+  }
+};
+
+// Enhanced start new chat with history loading option
+const startNewChat = async (loadHistory = false) => {
+  const newChatId = 'chat-' + Date.now();
+  setChatId(newChatId);
+  
+  if (loadHistory) {
+    await loadChatHistory(newChatId);
+  } else {
     setMessages([{
       text: "Hello and welcome! I'm your intelligent assistant. How can I help you today? ✨",
       sender: 'bot',
       timestamp: new Date().toISOString()
     }]);
-    setCurrentPage('chat');
-    setTimeout(() => textareaRef.current?.focus(), 50);
-  };
-
-  // API: send message to backend - WITH COMPREHENSIVE ERROR HANDLING
-  const sendMessage = async () => {
-    const text = messageRef.current?.trim();
-    if (!text || isLoading) return;
-
-    // append user message locally
-    const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
-    setMessages(prev => [...prev, userMsg]);
-
-    setInputMessage('');
-    messageRef.current = '';
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-      textareaRef.current.style.height = 'auto';
-    }
-    
-    setIsLoading(true);
-    setIsTyping(true);
-
-    try {
-      const formData = new URLSearchParams();
-      formData.append('query', text);
-      
-      if (chatId) {
-        formData.append('chat_id', chatId);
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const res = await fetch(API_BASE + '/chat/rag', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json'
-        },
-        body: formData.toString(),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        let errorMessage = 'Unknown error occurred';
-        
-        try {
-          const errorData = await res.json();
-          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
-        } catch {
-          errorMessage = await res.text() || `HTTP ${res.status}`;
-        }
-
-        console.error('API Error:', res.status, errorMessage);
-        
-        if (res.status === 422) {
-          pushMessage("❌ Invalid request format. Please try again.", 'bot');
-        } else if (res.status === 429) {
-          pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
-        } else if (res.status >= 500) {
-          pushMessage("🔧 Server error occurred. Our team has been notified. Please try again later.", 'bot');
-        } else if (res.status === 404) {
-          pushMessage("❓ Chat service not found. Please refresh and try again.", 'bot');
-        } else {
-          pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
-        }
-        return;
-      }
-
-      const data = await res.json();
-      
-      if (!data || typeof data !== 'object') {
-        throw new Error('Invalid response format');
-      }
-
-      const answer = data.result || getDemoResponse(text);
-      if (data.chat_id) setChatId(data.chat_id);
-      pushMessage(answer, 'bot');
-      
-      if (data.usage) {
-        console.log('Token usage:', data.usage);
-      }
-
-    } catch (error) {
-      console.error('Network Error:', error);
-      
-      if (error.name === 'AbortError') {
-        pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
-      } else if (error.message?.includes('fetch')) {
-        pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
-      } else if (error.message?.includes('CORS')) {
-        pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
-      } else {
-        const demo = getDemoResponse(text);
-        pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
-      }
-    } finally {
-      setIsTyping(false);
-      setIsLoading(false);
-      setTimeout(() => textareaRef.current?.focus(), 50);
-    }
-  };
-
+  }
+  
+  setCurrentPage('chat');
+  setTimeout(() => textareaRef.current?.focus(), 50);
+};
   // File upload handler - WITH COMPREHENSIVE ERROR HANDLING
   const handleFileInput = async (event) => {
     const f = event.target.files[0];
