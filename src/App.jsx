@@ -79,184 +79,221 @@ const App = () => {
     return responses[Math.floor(Math.random() * responses.length)];
   };
 
-// Fixed sendMessage function - 100% compatible with your backend
-const sendMessage = async () => {
-  const text = messageRef.current?.trim();
-  if (!text || isLoading) return;
-
-  // append user message locally
-  const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
-  setMessages(prev => [...prev, userMsg]);
-
-  setInputMessage('');
-  messageRef.current = '';
-  if (textareaRef.current) {
-    textareaRef.current.value = '';
-    textareaRef.current.style.height = 'auto';
-  }
-  
-  setIsLoading(true);
-  setIsTyping(true);
-
-  try {
-    // Prepare request data - matching your backend exactly
-    const requestBody = new URLSearchParams();
-    requestBody.append('query', text);
+  // Auto-Reconnect Handler
+  const handleSessionExpired = async () => {
+    console.log('Chat session expired, auto-reconnecting...');
     
-    if (chatId) {
-      requestBody.append('chat_id', chatId);
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-    // API call to your backend
-    const res = await fetch(API_BASE + '/chat/rag', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json'
-      },
-      body: requestBody.toString(),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      let errorMessage = 'Unknown error occurred';
+    // Clear current session
+    setChatId(null);
+    
+    // Show reconnection message
+    pushMessage("🔄 Session expired. Reconnecting automatically...", 'bot');
+    
+    // Wait 2 seconds then reconnect
+    setTimeout(async () => {
+      const newChatId = 'chat-' + Date.now();
+      setChatId(newChatId);
       
-      try {
-        const errorData = await res.json();
-        errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
-      } catch {
-        errorMessage = await res.text() || `HTTP ${res.status}`;
-      }
-
-      console.error('API Error:', res.status, errorMessage);
+      pushMessage("✅ New session started! You can continue chatting now.", 'bot');
       
-      if (res.status === 422) {
-        pushMessage("❌ Invalid request format. Please try again.", 'bot');
-      } else if (res.status === 429) {
-        pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
-      } else if (res.status >= 500) {
-        pushMessage("🔧 Server error occurred. Please try again later.", 'bot');
-      } else if (res.status === 404) {
-        pushMessage("❓ Chat service not found. Please refresh and try again.", 'bot');
-      } else {
-        pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
-      }
-      return;
-    }
+      // Focus back to input
+      setTimeout(() => textareaRef.current?.focus(), 100);
+    }, 2000);
+  };
 
-    const data = await res.json();
-    console.log('Chat API Response:', data);
+  // Updated sendMessage function - Compatible with your backend ResponseSchema + Auto-Reconnect
+  const sendMessage = async () => {
+    const text = messageRef.current?.trim();
+    if (!text || isLoading) return;
+
+    // append user message locally
+    const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
+    setMessages(prev => [...prev, userMsg]);
+
+    setInputMessage('');
+    messageRef.current = '';
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+      textareaRef.current.style.height = 'auto';
+    }
     
-    // Handle response based on your ResponseSchema
-    if (data && typeof data === 'object') {
-      // Extract response text
-      let answer = '';
-      if (data.result) {
-        answer = data.result;
-      } else if (data.message) {
-        answer = data.message;
+    setIsLoading(true);
+    setIsTyping(true);
+
+    try {
+      // Prepare request data - form-urlencoded as expected by your backend
+      const requestBody = new URLSearchParams();
+      requestBody.append('query', text);
+      
+      if (chatId) {
+        requestBody.append('chat_id', chatId);
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      // API call to your backend
+      const res = await fetch(API_BASE + '/chat/rag', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        body: requestBody.toString(),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        let errorMessage = 'Unknown error occurred';
+        
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+        } catch {
+          errorMessage = await res.text() || `HTTP ${res.status}`;
+        }
+
+        console.error('API Error:', res.status, errorMessage);
+        
+        // Handle specific error codes with auto-reconnect
+        if (res.status === 404) {
+          // Chat session not found - auto reconnect
+          pushMessage("💬 Chat session expired. Reconnecting...", 'bot');
+          handleSessionExpired();
+          return;
+        } else if (res.status === 422) {
+          pushMessage("❌ Invalid request format. Please try again.", 'bot');
+        } else if (res.status === 429) {
+          pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
+        } else if (res.status >= 500) {
+          pushMessage("🔧 Server error occurred. Please try again later.", 'bot');
+        } else if (res.status === 401 || res.status === 403) {
+          // Unauthorized/Forbidden - might be session expired
+          pushMessage("🔐 Session expired. Starting new session...", 'bot');
+          handleSessionExpired();
+          return;
+        } else {
+          pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
+        }
+        return;
+      }
+
+      const data = await res.json();
+      console.log('Chat API Response:', data);
+      
+      // Handle response based on ResponseSchema: { chat_id, result, usage }
+      if (data && typeof data === 'object') {
+        // Extract response from 'result' field
+        const answer = data.result || getDemoResponse(text);
+
+        // Update chat ID from response
+        if (data.chat_id) {
+          console.log('Chat ID from response:', data.chat_id);
+          setChatId(data.chat_id);
+        }
+
+        // Log usage if provided
+        if (data.usage) {
+          console.log('Token usage:', data.usage);
+        }
+
+        // Add bot response to chat
+        pushMessage(answer, 'bot');
+
       } else {
-        answer = getDemoResponse(text);
+        // Fallback if response format is unexpected
+        console.warn('Unexpected response format:', data);
+        const fallbackResponse = getDemoResponse(text);
+        pushMessage(fallbackResponse, 'bot');
       }
 
-      // Update chat ID if provided
-      if (data.chat_id && data.chat_id !== chatId) {
-        console.log('Updating chat ID:', data.chat_id);
-        setChatId(data.chat_id);
+    } catch (error) {
+      console.error('Chat API Error:', error);
+      
+      if (error.name === 'AbortError') {
+        pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
+      } else if (error.message?.includes('fetch')) {
+        pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
+      } else if (error.message?.includes('CORS')) {
+        pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
+      } else {
+        // Check if it might be a session expiry error
+        if (error.message?.includes('session') || error.message?.includes('expired')) {
+          pushMessage("🔄 Session may have expired. Reconnecting...", 'bot');
+          handleSessionExpired();
+          return;
+        }
+        
+        // Use demo response as fallback
+        const demo = getDemoResponse(text);
+        pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
       }
-
-      // Log usage if provided
-      if (data.usage) {
-        console.log('Token usage:', data.usage);
-      }
-
-      // Add bot response to chat
-      pushMessage(answer, 'bot');
-
-    } else {
-      // Fallback if response format is unexpected
-      console.warn('Unexpected response format:', data);
-      const fallbackResponse = getDemoResponse(text);
-      pushMessage(fallbackResponse, 'bot');
+    } finally {
+      setIsTyping(false);
+      setIsLoading(false);
+      setTimeout(() => textareaRef.current?.focus(), 50);
     }
+  };
 
-  } catch (error) {
-    console.error('Chat API Error:', error);
+  // Updated loadChatHistory function - Compatible with your Message schema
+  const loadChatHistory = async (chatId, limit = 50) => {
+    if (!chatId) return;
     
-    if (error.name === 'AbortError') {
-      pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
-    } else if (error.message?.includes('fetch')) {
-      pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
-    } else if (error.message?.includes('CORS')) {
-      pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
-    } else {
-      // Use demo response as fallback
-      const demo = getDemoResponse(text);
-      pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
+    try {
+      const res = await fetch(`${API_BASE}/chat/history/${chatId}?limit=${limit}`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (res.ok) {
+        const history = await res.json(); // Array of Message objects
+        console.log('Chat history loaded:', history);
+        
+        // Convert Message schema to your message format
+        // Message: { chat_id, role, content, timestamp }
+        const formattedMessages = history.map(msg => ({
+          text: msg.content,
+          sender: msg.role === 'user' ? 'user' : 'bot', // role can be 'user', 'assistant', 'system'
+          timestamp: msg.timestamp
+        }));
+        
+        // Sort by timestamp (newest to oldest from backend, reverse for display)
+        formattedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        
+        setMessages(formattedMessages);
+      } else {
+        console.warn('Could not load chat history:', res.status);
+      }
+    } catch (error) {
+      console.error('Error loading chat history:', error);
     }
-  } finally {
-    setIsTyping(false);
-    setIsLoading(false);
+  };
+
+  // Enhanced start new chat with auto-reconnect and history loading option
+  const startNewChat = async (loadHistory = false, showMessage = true) => {
+    const newChatId = 'chat-' + Date.now();
+    setChatId(newChatId);
+    
+    if (loadHistory) {
+      await loadChatHistory(newChatId);
+    } else {
+      const welcomeMsg = showMessage ? [{
+        text: "Hello and welcome! I'm your intelligent assistant. How can I help you today? ✨",
+        sender: 'bot',
+        timestamp: new Date().toISOString()
+      }] : [];
+      setMessages(welcomeMsg);
+    }
+    
+    setCurrentPage('chat');
     setTimeout(() => textareaRef.current?.focus(), 50);
-  }
-};
+  };
 
-// Optional: Function to load chat history
-const loadChatHistory = async (chatId, limit = 50) => {
-  if (!chatId) return;
-  
-  try {
-    const res = await fetch(`${API_BASE}/chat/history/${chatId}?limit=${limit}`, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-
-    if (res.ok) {
-      const history = await res.json();
-      console.log('Chat history loaded:', history);
-      
-      // Convert history to your message format
-      const formattedMessages = history.map(msg => ({
-        text: msg.content,
-        sender: msg.role === 'user' ? 'user' : 'bot',
-        timestamp: msg.timestamp
-      }));
-      
-      setMessages(formattedMessages);
-    } else {
-      console.warn('Could not load chat history:', res.status);
-    }
-  } catch (error) {
-    console.error('Error loading chat history:', error);
-  }
-};
-
-// Enhanced start new chat with history loading option
-const startNewChat = async (loadHistory = false) => {
-  const newChatId = 'chat-' + Date.now();
-  setChatId(newChatId);
-  
-  if (loadHistory) {
-    await loadChatHistory(newChatId);
-  } else {
-    setMessages([{
-      text: "Hello and welcome! I'm your intelligent assistant. How can I help you today? ✨",
-      sender: 'bot',
-      timestamp: new Date().toISOString()
-    }]);
-  }
-  
-  setCurrentPage('chat');
-  setTimeout(() => textareaRef.current?.focus(), 50);
-};
-  // File upload handler - WITH COMPREHENSIVE ERROR HANDLING
+  // Updated File upload handler - Compatible with your backend
   const handleFileInput = async (event) => {
     const f = event.target.files[0];
     if (!f) return;
@@ -289,6 +326,7 @@ const startNewChat = async (loadHistory = false) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
       
+      // Your backend expects subject as query parameter
       const res = await fetch(API_BASE + '/files/upload?subject=' + encodeURIComponent(subject), {
         method: 'POST',
         body: form,
@@ -328,8 +366,9 @@ const startNewChat = async (loadHistory = false) => {
       const data = await res.json();
       console.log('Upload response:', data);
       
+      // Create file entry for UI (your backend returns {"message": "file uploaded successfully"})
       const newFile = {
-        id: Date.now().toString(),
+        id: Date.now().toString(), // Generate local ID for UI
         name: f.name,
         subject: subject,
         uploadDate: new Date().toISOString(),
@@ -337,7 +376,10 @@ const startNewChat = async (loadHistory = false) => {
       };
       
       setUploadedFiles(prev => [newFile, ...prev]);
-      alert('✅ File uploaded and processed successfully!');
+      
+      // Show success message based on backend response
+      const successMessage = data.message || 'File uploaded and processed successfully!';
+      alert('✅ ' + successMessage);
       
     } catch (error) {
       console.error('Upload error:', error);
@@ -349,15 +391,7 @@ const startNewChat = async (loadHistory = false) => {
       } else if (error.message?.includes('CORS')) {
         alert('🔒 Upload blocked by security settings. Please contact support.');
       } else {
-        const newFile = {
-          id: Date.now().toString(),
-          name: f.name,
-          subject,
-          uploadDate: new Date().toISOString(),
-          size: (f.size / 1024 / 1024).toFixed(2) + ' MB'
-        };
-        setUploadedFiles(prev => [newFile, ...prev]);
-        alert('⚠️ Upload error occurred, but file added to demo list. Real upload may have failed.');
+        alert('⚠️ Upload error occurred. Please try again.');
       }
     } finally {
       setIsUploading(false);
@@ -365,7 +399,7 @@ const startNewChat = async (loadHistory = false) => {
     }
   };
 
-  // delete file handler
+  // Updated delete file handler - Compatible with your backend
   const deleteFile = async (fileId) => {
     if (!confirm('Are you sure you want to delete this file? This action cannot be undone.')) return;
     
@@ -388,15 +422,15 @@ const startNewChat = async (loadHistory = false) => {
       clearTimeout(timeoutId);
       
       if (res.ok) {
-        try {
-          const data = await res.json();
-          console.log('Delete response:', data);
-          setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-          alert('✅ File deleted successfully!');
-        } catch {
-          setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-          alert('✅ File deleted successfully!');
-        }
+        const data = await res.json();
+        console.log('Delete response:', data);
+        
+        setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+        
+        // Show success message from backend response
+        const successMessage = data.message || 'File deleted successfully!';
+        alert('✅ ' + successMessage);
+        
       } else {
         let errorMessage = 'Delete failed';
         
@@ -437,8 +471,7 @@ const startNewChat = async (loadHistory = false) => {
       } else if (error.message?.includes('fetch') || error.message?.includes('network')) {
         alert('🌐 Network error during deletion. Please check your connection.');
       } else {
-        alert('⚠️ Unexpected error during deletion. File removed from list locally.');
-        setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+        alert('⚠️ Unexpected error during deletion.');
       }
       
       setUploadedFiles(prev => prev.map(f => 
@@ -658,8 +691,23 @@ const startNewChat = async (loadHistory = false) => {
                 </div>
               </div>
             ) : (
-              <span className="text-sm text-amber-400 animate-pulse">New Chat</span>
+              <div>
+                <span className="text-sm text-amber-400 animate-pulse">Connecting...</span>
+                <div className="text-xs text-amber-300 flex items-center gap-1">
+                  <div className="w-2 h-2 bg-amber-400 rounded-full animate-ping"></div>
+                  New Session
+                </div>
+              </div>
             )}
+            
+            {/* Manual Reconnect Button (Hidden by default, shows on errors) */}
+            <button
+              onClick={() => handleSessionExpired()}
+              className="text-xs text-violet-400 hover:text-violet-300 mt-1 opacity-0 hover:opacity-100 transition-opacity"
+              title="Reconnect Chat Session"
+            >
+              🔄 Reconnect
+            </button>
           </div>
         </div>
       </div>
@@ -1016,4 +1064,4 @@ const startNewChat = async (loadHistory = false) => {
   );
 };
 
-export default App;
+export default App
