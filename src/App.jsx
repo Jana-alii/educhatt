@@ -102,145 +102,256 @@ const App = () => {
   };
 
   // FIXED: Updated sendMessage function with proper JSON format
-  const sendMessage = async () => {
-    const text = messageRef.current?.trim();
-    if (!text || isLoading) return;
+ // FIXED sendMessage function to work with your backend API
+const sendMessage = async () => {
+  const text = messageRef.current?.trim();
+  if (!text || isLoading) return;
 
-    // append user message locally
-    const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
-    setMessages(prev => [...prev, userMsg]);
+  // append user message locally
+  const userMsg = { text, sender: 'user', timestamp: new Date().toISOString() };
+  setMessages(prev => [...prev, userMsg]);
 
-    setInputMessage('');
-    messageRef.current = '';
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
-      textareaRef.current.style.height = 'auto';
-    }
+  setInputMessage('');
+  messageRef.current = '';
+  if (textareaRef.current) {
+    textareaRef.current.value = '';
+    textareaRef.current.style.height = 'auto';
+  }
+  
+  setIsLoading(true);
+  setIsTyping(true);
+
+  try {
+    // FIXED: Your backend expects query as form parameter, not FormData
+    const params = new URLSearchParams();
+    params.append('query', text);
     
-    setIsLoading(true);
-    setIsTyping(true);
+    // Add chat_id only if it exists
+    if (chatId && chatId.trim()) {
+      params.append('chat_id', chatId.trim());
+    }
 
-    try {
-      // FIXED: Use JSON format instead of form-urlencoded
-      const requestBody = {
-        query: text
-      };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    console.log('Sending request with params:', { query: text, chat_id: chatId });
+
+    // FIXED: Use URLSearchParams for form data, not FormData
+    const res = await fetch(API_BASE + '/chat/rag', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: params.toString(),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      let errorMessage = 'Unknown error occurred';
       
-      // Add chat_id only if it exists
-      if (chatId) {
-        requestBody.chat_id = chatId;
+      try {
+        const errorData = await res.json();
+        console.error('API Error Response:', errorData);
+        errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+      } catch {
+        errorMessage = await res.text() || `HTTP ${res.status}`;
       }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      console.error('API Error:', res.status, errorMessage);
+      
+      // Handle specific error codes with auto-reconnect
+      if (res.status === 404) {
+        // Chat session not found - auto reconnect
+        pushMessage("💬 Chat session expired. Reconnecting...", 'bot');
+        handleSessionExpired();
+        return;
+      } else if (res.status === 422) {
+        pushMessage(`❌ Request validation error: ${errorMessage}. Please try again.`, 'bot');
+      } else if (res.status === 429) {
+        pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
+      } else if (res.status >= 500) {
+        pushMessage("🔧 Server error occurred. Please try again later.", 'bot');
+      } else if (res.status === 401 || res.status === 403) {
+        // Unauthorized/Forbidden - might be session expired
+        pushMessage("🔐 Session expired. Starting new session...", 'bot');
+        handleSessionExpired();
+        return;
+      } else {
+        pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
+      }
+      return;
+    }
 
-      console.log('Sending request:', requestBody);
+    const data = await res.json();
+    console.log('Chat API Response:', data);
+    
+    // Handle response based on ResponseSchema: { chat_id, result, usage }
+    if (data && typeof data === 'object') {
+      // Extract response from 'result' field
+      const answer = data.result || getDemoResponse(text);
 
-      // FIXED: API call with proper JSON headers
-      const res = await fetch(API_BASE + '/chat/rag', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
+      // Update chat ID from response
+      if (data.chat_id) {
+        console.log('Chat ID from response:', data.chat_id);
+        setChatId(data.chat_id);
+      }
 
-      clearTimeout(timeoutId);
+      // Log usage if provided
+      if (data.usage) {
+        console.log('Token usage:', data.usage);
+      }
 
-      if (!res.ok) {
-        let errorMessage = 'Unknown error occurred';
-        
-        try {
-          const errorData = await res.json();
-          console.error('API Error Response:', errorData);
-          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
-        } catch {
-          errorMessage = await res.text() || `HTTP ${res.status}`;
-        }
+      // Add bot response to chat
+      pushMessage(answer, 'bot');
 
-        console.error('API Error:', res.status, errorMessage);
-        
-        // Handle specific error codes with auto-reconnect
-        if (res.status === 404) {
-          // Chat session not found - auto reconnect
-          pushMessage("💬 Chat session expired. Reconnecting...", 'bot');
-          handleSessionExpired();
-          return;
-        } else if (res.status === 422) {
-          pushMessage(`❌ Request validation error: ${errorMessage}. Please try again.`, 'bot');
-        } else if (res.status === 429) {
-          pushMessage("⚠️ Too many requests. Please wait a moment before trying again.", 'bot');
-        } else if (res.status >= 500) {
-          pushMessage("🔧 Server error occurred. Please try again later.", 'bot');
-        } else if (res.status === 401 || res.status === 403) {
-          // Unauthorized/Forbidden - might be session expired
-          pushMessage("🔐 Session expired. Starting new session...", 'bot');
-          handleSessionExpired();
-          return;
-        } else {
-          pushMessage(`❌ Error: ${errorMessage}. Please try again.`, 'bot');
-        }
+    } else {
+      // Fallback if response format is unexpected
+      console.warn('Unexpected response format:', data);
+      const fallbackResponse = getDemoResponse(text);
+      pushMessage(fallbackResponse, 'bot');
+    }
+
+  } catch (error) {
+    console.error('Chat API Error:', error);
+    
+    if (error.name === 'AbortError') {
+      pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
+    } else if (error.message?.includes('fetch')) {
+      pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
+    } else if (error.message?.includes('CORS')) {
+      pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
+    } else {
+      // Check if it might be a session expiry error
+      if (error.message?.includes('session') || error.message?.includes('expired')) {
+        pushMessage("🔄 Session may have expired. Reconnecting...", 'bot');
+        handleSessionExpired();
         return;
       }
-
-      const data = await res.json();
-      console.log('Chat API Response:', data);
       
-      // Handle response based on ResponseSchema: { chat_id, result, usage }
-      if (data && typeof data === 'object') {
-        // Extract response from 'result' field
-        const answer = data.result || getDemoResponse(text);
-
-        // Update chat ID from response
-        if (data.chat_id) {
-          console.log('Chat ID from response:', data.chat_id);
-          setChatId(data.chat_id);
-        }
-
-        // Log usage if provided
-        if (data.usage) {
-          console.log('Token usage:', data.usage);
-        }
-
-        // Add bot response to chat
-        pushMessage(answer, 'bot');
-
-      } else {
-        // Fallback if response format is unexpected
-        console.warn('Unexpected response format:', data);
-        const fallbackResponse = getDemoResponse(text);
-        pushMessage(fallbackResponse, 'bot');
-      }
-
-    } catch (error) {
-      console.error('Chat API Error:', error);
-      
-      if (error.name === 'AbortError') {
-        pushMessage("⏱️ Request timed out. The server might be busy. Please try again.", 'bot');
-      } else if (error.message?.includes('fetch')) {
-        pushMessage("🌐 Network connection error. Please check your internet connection and try again.", 'bot');
-      } else if (error.message?.includes('CORS')) {
-        pushMessage("🔒 Connection blocked. Please contact support if this persists.", 'bot');
-      } else {
-        // Check if it might be a session expiry error
-        if (error.message?.includes('session') || error.message?.includes('expired')) {
-          pushMessage("🔄 Session may have expired. Reconnecting...", 'bot');
-          handleSessionExpired();
-          return;
-        }
-        
-        // Use demo response as fallback
-        const demo = getDemoResponse(text);
-        pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
-      }
-    } finally {
-      setIsTyping(false);
-      setIsLoading(false);
-      setTimeout(() => textareaRef.current?.focus(), 50);
+      // Use demo response as fallback
+      const demo = getDemoResponse(text);
+      pushMessage(`⚠️ Connection error. Here's a demo response: ${demo}`, 'bot');
     }
-  };
+  } finally {
+    setIsTyping(false);
+    setIsLoading(false);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }
+};
+
+// FIXED: File upload handler to work with your backend
+const handleFileInput = async (event) => {
+  const f = event.target.files[0];
+  if (!f) return;
+  
+  if (!f.name.toLowerCase().endsWith('.pdf')) {
+    alert('❌ Only PDF files are supported. Please select a PDF file.');
+    event.target.value = '';
+    return;
+  }
+  
+  const maxSize = 50 * 1024 * 1024;
+  if (f.size > maxSize) {
+    alert('❌ File is too large. Please select a PDF file smaller than 50MB.');
+    event.target.value = '';
+    return;
+  }
+  
+  const subject = prompt('Enter file topic/category:') || 'General';
+  if (!subject.trim()) {
+    alert('❌ Subject is required. Please try again.');
+    event.target.value = '';
+    return;
+  }
+  
+  setIsUploading(true);
+
+  // FIXED: Your backend expects file as FormData + subject as query parameter
+  const formData = new FormData();
+  formData.append('file', f);
+  
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    
+    // FIXED: Send FormData to /files/upload with subject as query parameter
+    const url = `${API_BASE}/files/upload?subject=${encodeURIComponent(subject)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+      // Don't set Content-Type header for FormData
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) {
+      let errorMessage = 'Upload failed';
+      
+      try {
+        const errorData = await res.json();
+        console.error('Upload Error Response:', errorData);
+        errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
+      } catch {
+        errorMessage = await res.text() || `HTTP ${res.status}`;
+      }
+
+      console.error('Upload Error:', res.status, errorMessage);
+      
+      if (res.status === 400) {
+        alert('❌ Invalid file format. Only PDF files are supported.');
+      } else if (res.status === 413) {
+        alert('❌ File is too large. Please try a smaller PDF file.');
+      } else if (res.status === 422) {
+        alert(`❌ Validation error: ${errorMessage}. Please check the file and subject.`);
+      } else if (res.status === 429) {
+        alert('⚠️ Too many uploads. Please wait before uploading another file.');
+      } else if (res.status >= 500) {
+        alert('🔧 Server error during upload. Please try again later.');
+      } else {
+        alert(`❌ Upload failed: ${errorMessage}`);
+      }
+      return;
+    }
+    
+    const data = await res.json();
+    console.log('Upload response:', data);
+    
+    // Create file entry for UI (your backend returns {"message": "File uploaded successfully"})
+    const newFile = {
+      id: Date.now().toString(), // Generate local ID for UI
+      name: f.name,
+      subject: subject,
+      uploadDate: new Date().toISOString(),
+      size: (f.size / 1024 / 1024).toFixed(2) + ' MB'
+    };
+    
+    setUploadedFiles(prev => [newFile, ...prev]);
+    
+    // Show success message based on backend response
+    const successMessage = data.message || 'File uploaded and processed successfully!';
+    alert('✅ ' + successMessage);
+    
+  } catch (error) {
+    console.error('Upload error:', error);
+    
+    if (error.name === 'AbortError') {
+      alert('⏱️ Upload timed out. Please try with a smaller file or check your connection.');
+    } else if (error.message?.includes('fetch') || error.message?.includes('network')) {
+      alert('🌐 Network error during upload. Please check your connection and try again.');
+    } else if (error.message?.includes('CORS')) {
+      alert('🔒 Upload blocked by security settings. Please contact support.');
+    } else {
+      alert('⚠️ Upload error occurred. Please try again.');
+    }
+  } finally {
+    setIsUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+};
 
   // FIXED: Updated loadChatHistory function with proper endpoint
   const loadChatHistory = async (chatId, limit = 50) => {
@@ -301,114 +412,6 @@ const App = () => {
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
-  // FIXED: Updated File upload handler with proper JSON format
-  const handleFileInput = async (event) => {
-    const f = event.target.files[0];
-    if (!f) return;
-    
-    if (!f.name.toLowerCase().endsWith('.pdf')) {
-      alert('❌ Only PDF files are supported. Please select a PDF file.');
-      event.target.value = '';
-      return;
-    }
-    
-    const maxSize = 50 * 1024 * 1024;
-    if (f.size > maxSize) {
-      alert('❌ File is too large. Please select a PDF file smaller than 50MB.');
-      event.target.value = '';
-      return;
-    }
-    
-    const subject = prompt('Enter file topic/category:') || 'General';
-    if (!subject.trim()) {
-      alert('❌ Subject is required. Please try again.');
-      return;
-    }
-    
-    setIsUploading(true);
-
-    const form = new FormData();
-    form.append('file', f);
-    form.append('subject', subject); // FIXED: Add subject to form data
-    
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000);
-      
-      // FIXED: Remove query parameter, use form data instead
-      const res = await fetch(API_BASE + '/files/upload', {
-        method: 'POST',
-        body: form,
-        signal: controller.signal,
-        // Don't set Content-Type header, let browser set it with boundary for multipart
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!res.ok) {
-        let errorMessage = 'Upload failed';
-        
-        try {
-          const errorData = await res.json();
-          console.error('Upload Error Response:', errorData);
-          errorMessage = errorData.detail || errorData.message || `HTTP ${res.status}`;
-        } catch {
-          errorMessage = await res.text() || `HTTP ${res.status}`;
-        }
-
-        console.error('Upload Error:', res.status, errorMessage);
-        
-        if (res.status === 400) {
-          alert('❌ Invalid file format. Only PDF files are supported.');
-        } else if (res.status === 413) {
-          alert('❌ File is too large. Please try a smaller PDF file.');
-        } else if (res.status === 422) {
-          alert(`❌ Validation error: ${errorMessage}. Please check the file and subject.`);
-        } else if (res.status === 429) {
-          alert('⚠️ Too many uploads. Please wait before uploading another file.');
-        } else if (res.status >= 500) {
-          alert('🔧 Server error during upload. Please try again later.');
-        } else {
-          alert(`❌ Upload failed: ${errorMessage}`);
-        }
-        return;
-      }
-      
-      const data = await res.json();
-      console.log('Upload response:', data);
-      
-      // Create file entry for UI (your backend returns {"message": "file uploaded successfully"})
-      const newFile = {
-        id: Date.now().toString(), // Generate local ID for UI
-        name: f.name,
-        subject: subject,
-        uploadDate: new Date().toISOString(),
-        size: (f.size / 1024 / 1024).toFixed(2) + ' MB'
-      };
-      
-      setUploadedFiles(prev => [newFile, ...prev]);
-      
-      // Show success message based on backend response
-      const successMessage = data.message || 'File uploaded and processed successfully!';
-      alert('✅ ' + successMessage);
-      
-    } catch (error) {
-      console.error('Upload error:', error);
-      
-      if (error.name === 'AbortError') {
-        alert('⏱️ Upload timed out. Please try with a smaller file or check your connection.');
-      } else if (error.message?.includes('fetch') || error.message?.includes('network')) {
-        alert('🌐 Network error during upload. Please check your connection and try again.');
-      } else if (error.message?.includes('CORS')) {
-        alert('🔒 Upload blocked by security settings. Please contact support.');
-      } else {
-        alert('⚠️ Upload error occurred. Please try again.');
-      }
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
 
   // Updated delete file handler - Compatible with your backend
   const deleteFile = async (fileId) => {
